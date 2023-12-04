@@ -1,120 +1,3 @@
-import base64
-import json
-import logging
-import requests
-import os
-from google.cloud import storage
-import boto3
-from google.oauth2 import service_account
-
-# def lambda_handler(event, context):
-
-#     logger = logging.getLogger()
-#     logger.setLevel(logging.INFO)
-    
-#     print("Received event:", json.dumps(event, indent=2))
-#     # Assuming the first record's message is what you need
-#     # Extracting the SNS message and parsing it as JSON
-#     sns_message_str = event['Records'][0]['Sns']['Message']
-#     sns_message = json.loads(sns_message_str)
-    
-#     # Now you can use sns_message as needed
-#     print("Received SNS message:", sns_message)
-#     recipient = sns_message["user"]
-#     github_url = sns_message["url"]
-
-#     mailgun_api_key = os.environ.get('MAILGUN_API_KEY')
-#     mailgun_domain = os.environ.get("MAILGUN_DOMAIN")  # Replace with your Mailgun domain
-#     recipient = "prakruthisomashekar29@gmail.com"  # Replace with the recipient's email address
-#     subject = "Hello from Lambda!"
-#     body = "This is a test email sent from an AWS Lambda function using Mailgun."
-
-
-#     # Download the file from GitHub
-#     try:
-#         download_response = requests.get(github_url)
-#         download_response.raise_for_status()  # Raise an error for bad responses
-
-#         # Check if the file is not empty
-#         if download_response.content:
-#             # Store in Google Cloud Storage
-#             store_in_gcs(download_response.content, os.environ.get('BUCKET_NAME'), "webapp-assignment.zip")
-
-#             # Email the user about successful download
-#             send_email(os.environ.get('MAILGUN_API_KEY'), os.environ.get("MAILGUN_DOMAIN"), 
-#                        recipient, "Download Successful", "Your file has been downloaded successfully.")
-#         else:
-#             # Handle empty file scenario
-#             send_email(os.environ.get('MAILGUN_API_KEY'), os.environ.get("MAILGUN_DOMAIN"), 
-#                        recipient, "Download Failed", "The file was empty.")
-        
-#     except requests.RequestException as e:
-#         # Handle errors during download
-#         send_email(os.environ.get('MAILGUN_API_KEY'), os.environ.get("MAILGUN_DOMAIN"), 
-#                    recipient, "Download Failed", f"Error occurred while downloading the file: {e}")
-        
-#     # send_email(mailgun_api_key, mailgun_domain, recipient, subject, body)
-    
-
-
-# def store_in_gcs(file_content, bucket_name, file_name):
-#     # Parse the credentials from the environment variable
-#     credentials_info_str = os.environ.get('GOOGLE_CREDENTIALS')
-#     google_creds_json = base64.b64decode(credentials_info_str).decode('utf-8')
-    
-#     try:
-#         # Parse the JSON string into a dictionary
-#         google_creds = json.loads(google_creds_json)
-#     except json.JSONDecodeError as e:
-#         print("Error parsing JSON: ", e)
-#         logger.info("Error " + e)
-#         print("JSON string: ", google_creds_json)
-#         logger.info("GOOGLE_CREDENTIALS: JSON " + google_creds_json)
-#         raise
-
-#     print("Type of credentials_info:", type(credentials_info_str))
-#     print("Content of credentials_info:", credentials_info_str)
-#     credentials = service_account.Credentials.from_service_account_info(credentials_info)
-
-#     # Initialize the storage client with the credentials
-#     storage_client = storage.Client(credentials=credentials)
-#     bucket = storage_client.bucket(bucket_name)
-#     blob = bucket.blob(file_name)
-#     blob.upload_from_string(file_content)
-#     print("File Uploaded to S3")
-
-
-# def send_email(api_key, domain, recipient, subject, body):
-#     url = f"https://api.mailgun.net/v3/{domain}/messages"
-#     auth = ('api', api_key)
-#     data = {'from': f'Lambda Function <mailgun@{domain}>',
-#             'to': recipient,
-#             'subject': subject,
-#             'text': body}
-    
-    # try:
-    #     response = requests.post(url, auth=auth, data=data)
-    #     response.raise_for_status()
-    #     # Track successful email in DynamoDB
-    #     track_email_status(recipient, "Success", "Email sent successfully")
-    # except requests.RequestException as e:
-    #     # Track failed email in DynamoDB
-    #     track_email_status(recipient, "Failed", str(e))
-
-# def track_email_status(email, status, message):
-#     dynamodb = boto3.resource('dynamodb')
-#     table = dynamodb.Table(os.environ.get("DYNAMODB_TABLE"))
-#     table.put_item(
-#         Item={
-#             'email': email,
-#             'status': status,
-#             'message': message
-#         }
-#     )
-
-
-
-
 import boto3
 import requests
 from google.cloud import storage
@@ -125,6 +8,8 @@ import logging
 import base64
 import datetime
 import smtplib
+import zipfile
+import io
 from email.mime.text import MIMEText
 
 def lambda_handler(event, context):
@@ -178,57 +63,83 @@ def lambda_handler(event, context):
     source_email = "mailgun@prakruthi.me"
 
     logger.info("source_email : %s", source_email)
-
-
+    timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
 
     response = requests.get(submission_url)
     file_content = response.content
-    if response.status_code != 200 or not file_content:
-        raise ValueError("Invalid URL or empty content")
-
-
-    timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
     directory_path = f"{user_email}/{assignment_id}/"
     unique_file_name = f"submission_{timestamp}.zip"
     full_path = directory_path + unique_file_name
-    blob = bucket.blob(full_path)
-    blob.upload_from_string(file_content)
-    logger.info("full_path : %s", full_path)
 
+    # Check if the request was successful
+    if response.status_code == 200:
+        # Process the file and upload to GCP
+        
+        blob = bucket.blob(full_path)
+        blob.upload_from_string(file_content)
+        logger.info("Full_path : %s", full_path)
+        
+        
+        # Use BytesIO to handle the downloaded content as a file-like object
+        zip_file = zipfile.ZipFile(io.BytesIO(response.content))
 
-    logger.info("Sending Email")
-    # Send success email
-    send_email(os.environ.get("MAILGUN_DOMAIN"), user_email, first_name, last_name, submission_url, assignment_id, source_email, "Submission Submitted Successfully - Canvas",
-                "We are pleased to inform you that your submission for the assignment and has been successfully received and processed." , full_path, timestamp)
+        # Check if the ZIP file is empty or contains empty folders
+        if not zip_file.namelist():
+            print("The ZIP file is empty.")
+            # Handle empty file scenario
+            logger.warning("Empty file submitted")
+            send_email(os.environ.get("MAILGUN_DOMAIN"), user_email, first_name, last_name, submission_url, assignment_id, source_email, "Submission Error",
+                        f"Error occurred while downloading the file: Empty folder" , full_path, timestamp, response.status_code)
+            update_dynamodb(user_email, assignment_id, submission_url, timestamp,"Failed", "Empty file submitted")
+            logger.info("Updating dynamo DB, status-failure")
+            # handle_empty_file_scenario(user_email, submission_url, assignment_id)
+        else:
+            is_empty = all([zip_info.filename.endswith('/') for zip_info in zip_file.infolist()])
+            if is_empty:
+                print("The ZIP file contains only empty folders.")
+                # Handle errors during download
+                logger.error(f"The ZIP file contains only empty folders.")
+                logger.info("Sending Email")
+                send_email(os.environ.get("MAILGUN_DOMAIN"), user_email, first_name, last_name, submission_url, assignment_id, source_email, "Download Failed",
+                                f"The ZIP file contains only empty folders. " , full_path, timestamp, response.status_code)
 
-    send_emaill(os.environ.get('MAILGUN_API_KEY'), os.environ.get("MAILGUN_DOMAIN"), 
-                   "prakruthisomashekar29@gmail.com", "Download Failed", f"Error occurred while downloading the file: {e}")
-    logger.info("Email Sent and updating dynamo DB")
+                update_dynamodb(user_email, assignment_id, submission_url, timestamp, "Failed", "Download error")
+                logger.info("Updating dynamo DB, status-failure")      
+    
+            else:
+                print("The ZIP file contains files.")
+                # Send success email
+                send_email(os.environ.get("MAILGUN_DOMAIN"), user_email, first_name, last_name, submission_url, assignment_id, source_email, "Submission Submitted Successfully - Canvas",
+                            "We are pleased to inform you that your submission for the assignment and has been successfully received and processed." , full_path, timestamp, response.status_code)
+                update_dynamodb(user_email, assignment_id, submission_url, timestamp,"Success", "Assignment Submitted")
+                logger.info("Updating dynamo DB, status-success")
+                logger.info("Table updated")
+
+    else:
+        # Handle errors during download
+        logger.error(f"Error occurred while downloading the file:")
+        send_email(os.environ.get("MAILGUN_DOMAIN"), user_email, first_name, last_name, submission_url, assignment_id, source_email, "Download Failed",
+                        f"Error occurred while downloading the file: " , full_path, timestamp, response.status_code)
+
+        update_dynamodb(user_email, assignment_id, submission_url, timestamp, "Failed", "Download error")
+        logger.info("Updating dynamo DB, status-failure")      
     
 
-    logger.info("Table updated")
-       
 
-    # except Exception as e:
-    #     logger.error(f"Error in processing submission: {e}")
-    #     send_email(os.environ.get("MAILGUN_DOMAIN"),user_email, submission_url, assignment_id, source_email, "Submission Error - Canvas",
-    #                "There was an error with your submission. Please ensure the URL is correct and the content is not empty.")
-
-
-def send_email(domain, user_email, first_name, last_name, submission_url, assignment_id, source_email, subject, body, full_path, timestamp):
+def send_email(domain, user_email, first_name, last_name, submission_url, assignment_id, source_email, subject, body, full_path, timestamp, code):
     print("Sending email ", user_email, submission_url, assignment_id, source_email, subject, body)
     # Mailgun parameters
     logger = logging.getLogger()
     api_key = os.environ.get('MAILGUN_API_KEY')
     to_address = user_email
 
-    email_body = "\r\n" + "Dear "+first_name +" "+last_name+",\r\n" + body + "\r\n" + "- Assignment ID: "+ assignment_id + "\r\n" + "- Submission URL: " + submission_url + "\r\n\r\n" + "Should you have any questions or need further assistance, please feel free to contact us at info@pranaykasavaraju.me.\r\n\r\nWe appreciate your effort and time.\r\n\r\nBest regards,\r\nCanvas\r\n"
+    email_body = "\r\n" + "Dear "+first_name +" "+last_name+",\r\n" + body + "\r\n" + "- Assignment ID: "+ assignment_id + "\r\n" + "- Submission URL: " + submission_url + "\r\n" + "- Status Code: "+ str(code) + "\r\n" + "\r\n\r\n" + "Should you have any questions or need further assistance, please feel free to contact us at info@prakruthi.me.\r\n\r\nWe appreciate your effort and time.\r\n\r\nBest regards,\r\nCanvas\r\n"
     
 
     url = f"https://api.mailgun.net/v3/{domain}/messages"
     auth = ('api', api_key)
     data = {'from': f'Lambda Function <mailgun@{domain}>',
-            'to': "prakruthisomashekar29@gmmail.com",
+            'to': user_email,
             'subject': subject,
             'text': email_body}
     
@@ -236,49 +147,27 @@ def send_email(domain, user_email, first_name, last_name, submission_url, assign
         response = requests.post(url, auth=auth, data=data)
         response.raise_for_status()
         logger.info(f"Email sent successfully to {to_address}")
-        logger.info(f"Email sent successfully to Prakruthi")
 
-        # Update DynamoDB
-        update_dynamodb(user_email, assignment_id, submission_url, full_path, timestamp, "Success")
-        
     except requests.RequestException as e:
         # Track failed email in DynamoDB
-        update_dynamodb(user_email, assignment_id, submission_url, full_path, timestamp, "Failure")
-        
+        pass
+        # update_dynamodb(user_email, assignment_id, submission_url, full_path, timestamp, "Failure")
 
 
-
-def update_dynamodb(user_email, assignment_id, submission_url, full_path, timestamp, status):
-    table_name = os.environ.get('DYNAMO_TABLE_NAME')
+def update_dynamodb(user_email, assignment_id, submission_url, timestamp, status, message):
+    table_name = os.environ.get('DYNAMODB_TABLE')
     partition_key = f"{user_email}#{assignment_id}#{timestamp}"
     dynamodb = boto3.resource('dynamodb')
     table = dynamodb.Table(table_name)
     table.put_item(
         Item={
-            'ID': partition_key,
+            'id': partition_key,
             'AssignmentId': assignment_id,
             'SubmissionUrl': submission_url,
-            'FilePath': full_path,
             'Timestamp':  timestamp,
-            "Status": status
+            "Status": status,
+            "Message": message
         }
     )
 
 
-def send_emaill(api_key, domain, recipient, subject, body):
-    url = f"https://api.mailgun.net/v3/{domain}/messages"
-    auth = ('api', api_key)
-    data = {'from': f'Lambda Function <mailgun@{domain}>',
-            'to': recipient,
-            'subject': subject,
-            'text': body}
-    
-    try:
-        response = requests.post(url, auth=auth, data=data)
-        response.raise_for_status()
-        # Track successful email in DynamoDB
-        # track_email_status(recipient, "Success", "Email sent successfully")
-    except requests.RequestException as e:
-        # Track failed email in DynamoDB
-        # track_email_status(recipient, "Failed", str(e))
-        pass
